@@ -9,7 +9,7 @@
 #
 # GPU: use docker-compose.gpu.yml, which sets
 #   LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda   (CUDA llama binary + libs)
-#   TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124  (CUDA torch wheels)
+#   TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130  (CUDA torch wheels)
 # The base stays python:3.11-slim either way — llama's CUDA runtime libs are
 # copied from the upstream image and the driver comes from the NVIDIA
 # container runtime.
@@ -88,7 +88,10 @@ COPY local_voice_ai ./local_voice_ai
 
 # Install: torch (with explicit index for CPU/CUDA selection) + the [ml] and
 # [whisper] extras in a single resolution pass so versions are consistent.
+# UV_HTTP_TIMEOUT: the CUDA wheels are multi-hundred-MB and the CDN can stall
+# past uv's 30s default mid-transfer, killing the build.
 RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_HTTP_TIMEOUT=300 \
     uv pip install --system --index-strategy unsafe-best-match \
         --extra-index-url ${TORCH_INDEX_URL} \
         ".[ml,whisper]"
@@ -112,8 +115,23 @@ RUN ln -s /usr/local/lib/llama/llama-server /usr/local/bin/llama-server \
     && ldconfig
 COPY --from=livekit-bin /livekit-server /usr/local/bin/livekit-server
 COPY --from=nemo-speech-bin /opt/nemo-speech /opt/nemo-speech
-ENV PATH=/opt/nemo-speech/bin:${PATH} \
-    LD_LIBRARY_PATH=/opt/nemo-speech/lib:${LD_LIBRARY_PATH}
+# nemo-speech finds its bundled libraries through its $ORIGIN/../lib RUNPATH.
+# Never put /opt/nemo-speech/lib on LD_LIBRARY_PATH: the runtime archive ships
+# an ancient libstdc++.so.6 plus its own libllama.so.0 / libggml.so.0, and the
+# env var made every process in the container — llama-server included —
+# resolve those instead of the system/llama copies, killing llama-server with
+# "GLIBCXX_3.4.32 not found" (and worse, loading nemo's old ggml ABI).
+ENV PATH=/opt/nemo-speech/bin:${PATH}
+
+# Fail the build, not the first `docker run`, if the loader can no longer
+# resolve llama-server's library set (e.g. a base-image libstdc++ regression).
+# The CUDA build is exempt: its backend dlopen()s the NVIDIA driver, which is
+# only injected by the container runtime, not present at image build time.
+ARG LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server
+RUN case "${LLAMA_IMAGE}" in *cuda*) \
+        echo "skipping llama-server smoke test (CUDA build)" ;; \
+        *) /usr/local/bin/llama-server --version >/dev/null ;; \
+    esac
 
 # Drop in the static-exported frontend
 COPY --from=frontend /app/out /app/frontend/out

@@ -11,7 +11,12 @@ services:
     build:
       args:
         LLAMA_IMAGE: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda}
-        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
+        # A pytorch.org CUDA line that still tracks current torch: its
+        # torch-X+cuXXX build outscores PyPI's plain X, so resolution stays on
+        # pytorch.org (which mirrors the nvidia wheels). Stale lines lose the
+        # version race and silently pull the PyPI cu13 build, whose nvidia
+        # deps live only on pypi.nvidia.com.
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu130}
         NEMO_SPEECH_BACKEND: ${NEMO_SPEECH_BACKEND:-cuda}
     environment:
       LLAMA_N_GPU_LAYERS: ${LLAMA_N_GPU_LAYERS:-999}
